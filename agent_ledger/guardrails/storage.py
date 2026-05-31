@@ -64,6 +64,16 @@ class GuardrailStorage:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_stops_agent ON guardrail_stops(agent_id)"
             )
+            self._ensure_column(
+                conn, "guardrail_stops", "estimated_cost_saved", "REAL NOT NULL DEFAULT 0"
+            )
+
+    def _ensure_column(
+        self, conn, table: str, column: str, definition: str
+    ) -> None:
+        cols = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def set_workflow_objective(self, workflow: str, objective: str) -> None:
         ts = datetime.now(timezone.utc).isoformat()
@@ -148,7 +158,9 @@ class GuardrailStorage:
         budget_limit: float | None,
         drift_score: float | None,
         estimated_saved_usd: float,
+        estimated_cost_saved: float | None = None,
     ) -> int:
+        saved = estimated_cost_saved if estimated_cost_saved is not None else estimated_saved_usd
         ts = datetime.now(timezone.utc).isoformat()
         with sqlite_connection(self.db_path) as conn:
             cur = conn.execute(
@@ -156,8 +168,8 @@ class GuardrailStorage:
                 INSERT INTO guardrail_stops (
                     agent_id, workflow, session_id, reason, detail,
                     calls_at_stop, cost_at_stop, budget_limit, drift_score,
-                    estimated_saved_usd, created_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    estimated_saved_usd, estimated_cost_saved, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     agent_id,
@@ -170,6 +182,7 @@ class GuardrailStorage:
                     budget_limit,
                     drift_score,
                     estimated_saved_usd,
+                    saved,
                     ts,
                 ),
             )
@@ -209,6 +222,9 @@ class GuardrailStorage:
             saved = conn.execute(
                 "SELECT COALESCE(SUM(estimated_saved_usd), 0) FROM guardrail_stops"
             ).fetchone()[0]
+            cost_saved = conn.execute(
+                "SELECT COALESCE(SUM(estimated_cost_saved), 0) FROM guardrail_stops"
+            ).fetchone()[0]
             avg_drift = conn.execute(
                 "SELECT COALESCE(AVG(drift_score), 0) FROM guardrail_drift_logs"
             ).fetchone()[0]
@@ -235,10 +251,12 @@ class GuardrailStorage:
             stop_reasons={row["reason"]: row["cnt"] for row in by_reason},
             average_drift_score=round(mean_drift, 4),
             estimated_saved_usd=round(float(saved), 6),
+            estimated_cost_saved=round(float(cost_saved), 6),
             stops=[self._row_to_stop(r) for r in stop_rows],
         )
 
     def _row_to_stop(self, row) -> GuardrailStopRecord:
+        cost_saved = row["estimated_cost_saved"] if "estimated_cost_saved" in row.keys() else row["estimated_saved_usd"]
         return GuardrailStopRecord(
             id=row["id"],
             agent_id=row["agent_id"],
@@ -251,5 +269,6 @@ class GuardrailStorage:
             budget_limit=row["budget_limit"],
             drift_score=row["drift_score"],
             estimated_saved_usd=row["estimated_saved_usd"],
+            estimated_cost_saved=float(cost_saved),
             created_at=datetime.fromisoformat(row["created_at"]),
         )

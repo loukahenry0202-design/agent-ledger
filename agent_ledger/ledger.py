@@ -10,7 +10,9 @@ from agent_ledger.models import CallRecord, CostReport
 from agent_ledger.pricing import compute_cost_usd
 from agent_ledger.storage import GroupBy, Storage
 
-DEFAULT_DB = Path.home() / ".agent_ledger" / "ledger.db"
+from agent_ledger.settings import resolve_database_path
+
+DEFAULT_DB = resolve_database_path()
 
 
 class Ledger:
@@ -19,7 +21,7 @@ class Ledger:
     _instance: Ledger | None = None
 
     def __init__(self, db_path: str | Path | None = None) -> None:
-        path = db_path or os.environ.get("AGENT_LEDGER_DB", DEFAULT_DB)
+        path = db_path or resolve_database_path()
         self.storage = Storage(path)
 
     @classmethod
@@ -60,6 +62,9 @@ class Ledger:
                 agent_id=agent,
                 workflow=flow,
                 session_id=session_id,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
                 cost_usd=cost,
                 prompt=prompt,
                 output=output,
@@ -78,7 +83,13 @@ class Ledger:
         )
 
         if guardrails is not None:
-            guardrails.after_record(cost_usd=cost, prompt=prompt, output=output)
+            guardrails.after_record(
+                cost_usd=cost,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                prompt=prompt,
+                output=output,
+            )
 
         return CallRecord(
             id=row_id,

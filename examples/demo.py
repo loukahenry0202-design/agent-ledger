@@ -14,8 +14,10 @@ from agent_ledger import (
     track_agent,
 )
 from agent_ledger.guardrails.exceptions import BudgetExceededError, LoopDetectedError
+from agent_ledger.settings import load_env, resolve_database_path
 
-DB = ROOT / "data" / "demo_ledger.db"
+load_env()
+DB = resolve_database_path(ROOT / "data" / "demo_ledger.db")
 LOOP_PROMPT = "Réessayer la même requête utilisateur sans progression"
 LOOP_OUTPUT = "Tentative échouée, je réessaie immédiatement la même action"
 
@@ -94,19 +96,22 @@ def run_budget_guard_demo(ledger: Ledger) -> None:
             budget_scope="session",
         ),
     )
-    with agent_session("budget-bot", workflow="expensive-task"):
-        for attempt in range(1, 10):
-            try:
-                ledger.record(
-                    model="gpt-4o",
-                    input_tokens=800,
-                    output_tokens=200,
-                    guardrails=budget_guard,
-                )
-                print(f"  appel {attempt}: OK")
-            except BudgetExceededError as exc:
-                print(f"  STOP — {exc}")
-                break
+    try:
+        with agent_session("budget-bot", workflow="expensive-task"):
+            for attempt in range(1, 10):
+                try:
+                    ledger.record(
+                        model="gpt-4o",
+                        input_tokens=800,
+                        output_tokens=200,
+                        guardrails=budget_guard,
+                    )
+                    print(f"  appel {attempt}: OK")
+                except BudgetExceededError as exc:
+                    print(f"  STOP — {exc}")
+                    break
+    finally:
+        budget_guard.close()
 
 
 def main() -> None:
@@ -119,36 +124,39 @@ def main() -> None:
         DB,
         GuardrailConfig(
             max_calls_per_session=5,
-            similar_text_threshold=0.80,
+            similar_text_threshold=0.85,
             similar_repeat_count=3,
+            prompt_history_size=4,
             drift_warning_threshold=0.50,
         ),
     )
+    try:
+        run_research(ledger)
+        run_support(ledger)
+        run_orchestrator(ledger)
+        run_looping_agent(ledger, guardrails)
+        run_budget_guard_demo(ledger)
 
-    run_research(ledger)
-    run_support(ledger)
-    run_orchestrator(ledger)
-    run_looping_agent(ledger, guardrails)
-    run_budget_guard_demo(ledger)
+        print("\n=== Rapport par agent ===\n")
+        for row in ledger.report(group_by="agent"):
+            print(
+                f"  {row.group_key}: {row.call_count} appels, "
+                f"${row.total_cost_usd:.4f}"
+            )
 
-    print("\n=== Rapport par agent ===\n")
-    for row in ledger.report(group_by="agent"):
-        print(
-            f"  {row.group_key}: {row.call_count} appels, "
-            f"${row.total_cost_usd:.4f}"
-        )
+        summary = ledger.guardrail_summary()
+        print("\n=== Agent Guardrails ===\n")
+        print(f"  Workflows stoppés : {summary.stopped_workflows}")
+        print(f"  Raisons           : {summary.stop_reasons}")
+        print(f"  Drift moyen       : {summary.average_drift_score:.3f}")
+        print(f"  Coût économisé    : ${summary.estimated_saved_usd:.4f}")
 
-    summary = ledger.guardrail_summary()
-    print("\n=== Agent Guardrails ===\n")
-    print(f"  Workflows stoppés : {summary.stopped_workflows}")
-    print(f"  Raisons           : {summary.stop_reasons}")
-    print(f"  Drift moyen       : {summary.average_drift_score:.3f}")
-    print(f"  Coût économisé    : ${summary.estimated_saved_usd:.4f}")
-
-    print(f"\n  Dépense totale: ${ledger.total_spend():.4f}")
-    print(f"  Base SQLite: {DB}")
-    print("\n  CLI guardrails:")
-    print(f"    py -3 -m agent_ledger.cli guardrails --db {DB}")
+        print(f"\n  Dépense totale: ${ledger.total_spend():.4f}")
+        print(f"  Base SQLite: {DB}")
+        print("\n  CLI guardrails:")
+        print(f"    py -3 -m agent_ledger.cli guardrails --db {DB}")
+    finally:
+        guardrails.close()
 
 
 if __name__ == "__main__":

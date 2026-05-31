@@ -8,7 +8,10 @@ build/
 .venv/
 venv/
 .env
+.env.local
 *.db
+*.sqlite
+*.sqlite3
 !data/.gitkeep
 data/*.html
 data/*.db

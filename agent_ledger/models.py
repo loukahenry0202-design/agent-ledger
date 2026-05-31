@@ -41,6 +41,7 @@ class GuardrailStopRecord:
     budget_limit: float | None
     drift_score: float | None
     estimated_saved_usd: float
+    estimated_cost_saved: float
     created_at: datetime
 
 
@@ -50,4 +51,5 @@ class GuardrailSummary:
     stop_reasons: dict[str, int]
     average_drift_score: float
     estimated_saved_usd: float
+    estimated_cost_saved: float
     stops: list[GuardrailStopRecord] = field(default_factory=list)

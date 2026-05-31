@@ -33,3 +33,19 @@ def compute_cost_usd(
     key = normalize_model(model)
     in_rate, out_rate = table.get(key, table["unknown"])
     return (input_tokens * in_rate + output_tokens * out_rate) / 1_000_000
+
+
+def avg_price_per_token(
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    pricing: dict[str, tuple[float, float]] | None = None,
+) -> float:
+    """Prix moyen USD par token (entrée + sortie) pour un appel ou un modèle."""
+    total = input_tokens + output_tokens
+    if total > 0:
+        return compute_cost_usd(model, input_tokens, output_tokens, pricing) / total
+    table = pricing or DEFAULT_PRICING
+    key = normalize_model(model)
+    in_rate, out_rate = table.get(key, table["unknown"])
+    return (in_rate + out_rate) / 2 / 1_000_000

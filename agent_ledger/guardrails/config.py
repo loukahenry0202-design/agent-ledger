@@ -11,6 +11,7 @@ class GuardrailConfig:
     max_calls_per_session: int = 20
     similar_text_threshold: float = 0.85
     similar_repeat_count: int = 3
+    prompt_history_size: int = 4
     budget_limit_usd: float | None = None
     budget_scope: Literal["session", "agent", "workflow"] = "session"
     drift_warning_threshold: float = 0.55

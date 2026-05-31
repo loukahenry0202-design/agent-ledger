@@ -7,10 +7,12 @@ import sys
 from pathlib import Path
 
 from agent_ledger.ledger import Ledger
+from agent_ledger.settings import load_env, resolve_database_path
 from agent_ledger.storage import GroupBy
 
 
 def main(argv: list[str] | None = None) -> int:
+    load_env()
     parser = argparse.ArgumentParser(
         prog="agent-ledger",
         description="Rapports de coûts API par agent IA",
@@ -47,7 +49,8 @@ def main(argv: list[str] | None = None) -> int:
 
     args = parser.parse_args(argv)
     Ledger.reset()
-    ledger = Ledger.get(args.db) if args.db else Ledger.get()
+    db_default = resolve_database_path("data/demo_ledger.db")
+    ledger = Ledger.get(args.db or db_default)
 
     if args.command == "report":
         rows = ledger.report(group_by=args.group_by)  # type: ignore[attr-defined]
@@ -118,7 +121,8 @@ def main(argv: list[str] | None = None) -> int:
             return 0
         print(f"\nWorkflows stoppés : {summary.stopped_workflows}")
         print(f"Drift score moyen : {summary.average_drift_score:.3f}")
-        print(f"Coût économisé (est.) : ${summary.estimated_saved_usd:.4f}")
+        print(f"Saved by Guardrails : ${summary.estimated_cost_saved:.4f}")
+        print(f"Coût économisé (legacy) : ${summary.estimated_saved_usd:.4f}")
         print(f"Raisons : {summary.stop_reasons}\n")
         print(f"{'Date':<18} {'Agent':<16} {'Workflow':<16} {'Raison':<16} {'Économisé':>10}")
         print("-" * 80)
@@ -126,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
             print(
                 f"{s.created_at:%Y-%m-%d %H:%M} {s.agent_id:<16} "
                 f"{(s.workflow or '—'):<16} {s.reason:<16} "
-                f"${s.estimated_saved_usd:>9.4f}"
+                f"${s.estimated_cost_saved:>9.4f}"
             )
         return 0
 

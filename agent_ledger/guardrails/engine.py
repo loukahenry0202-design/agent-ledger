@@ -10,8 +10,9 @@ from agent_ledger.guardrails.exceptions import (
     DriftWarning,
     LoopDetectedError,
 )
-from agent_ledger.guardrails.similarity import text_similarity
+from agent_ledger.guardrails.similarity import consecutive_similarity_score, text_similarity
 from agent_ledger.guardrails.storage import GuardrailStorage
+from agent_ledger.pricing import avg_price_per_token
 
 
 @dataclass
@@ -20,6 +21,8 @@ class _SessionState:
     recent_prompts: list[str] = field(default_factory=list)
     recent_outputs: list[str] = field(default_factory=list)
     total_cost_usd: float = 0.0
+    total_input_tokens: int = 0
+    total_output_tokens: int = 0
     stopped: bool = False
 
 
@@ -68,6 +71,9 @@ class AgentGuardrails:
         agent_id: str,
         workflow: str | None,
         session_id: str,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
         cost_usd: float,
         prompt: str | None = None,
         output: str | None = None,
@@ -103,9 +109,25 @@ class AgentGuardrails:
                     f"{next_call_index} appels prévus, limite {self._config.max_calls_per_session}"
                 ),
                 call_count=next_call_index,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                pending_cost_usd=cost_usd,
             )
 
         if prompt:
+            self._check_prompt_loop(
+                agent_id=agent_id,
+                workflow=workflow,
+                session_id=session_id,
+                state=state,
+                prompt=prompt,
+                call_count=next_call_index,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                pending_cost_usd=cost_usd,
+            )
             self._check_similarity_streak(
                 agent_id=agent_id,
                 workflow=workflow,
@@ -115,6 +137,10 @@ class AgentGuardrails:
                 bucket=state.recent_prompts,
                 label="prompt",
                 call_count=next_call_index,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                pending_cost_usd=cost_usd,
             )
         if output:
             self._check_similarity_streak(
@@ -126,6 +152,10 @@ class AgentGuardrails:
                 bucket=state.recent_outputs,
                 label="output",
                 call_count=next_call_index,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                pending_cost_usd=cost_usd,
             )
 
         if self._config.budget_limit_usd is not None:
@@ -185,26 +215,80 @@ class AgentGuardrails:
                         detail=f"drift_score={drift_score:.3f}",
                         call_count=next_call_index,
                         drift_score=drift_score,
+                        model=model,
+                        input_tokens=input_tokens,
+                        output_tokens=output_tokens,
+                        pending_cost_usd=cost_usd,
                     )
 
         return drift_score
 
-    def after_record(self, *, cost_usd: float, prompt: str | None, output: str | None) -> None:
+    def after_record(
+        self,
+        *,
+        cost_usd: float,
+        input_tokens: int,
+        output_tokens: int,
+        prompt: str | None,
+        output: str | None,
+    ) -> None:
         agent_id = current_agent()
         workflow = current_workflow()
         session_id = current_session_id()
         state = self._state(agent_id, workflow, session_id)
         state.call_count += 1
         state.total_cost_usd += cost_usd
+        state.total_input_tokens += input_tokens
+        state.total_output_tokens += output_tokens
         if prompt:
             state.recent_prompts.append(prompt)
-            state.recent_prompts = state.recent_prompts[-10:]
+            state.recent_prompts = state.recent_prompts[-self._config.prompt_history_size :]
         if output:
             state.recent_outputs.append(output)
             state.recent_outputs = state.recent_outputs[-10:]
 
     def summary(self):
         return self._storage.summary()
+
+    def _check_prompt_loop(
+        self,
+        *,
+        agent_id: str,
+        workflow: str | None,
+        session_id: str,
+        state: _SessionState,
+        prompt: str,
+        call_count: int,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        pending_cost_usd: float,
+    ) -> None:
+        """Hard stop si les N derniers prompts consécutifs sont quasi identiques."""
+        history = state.recent_prompts[-(self._config.prompt_history_size - 1) :]
+        window = history + [prompt]
+        if len(window) < self._config.similar_repeat_count:
+            return
+
+        tail = window[-self._config.similar_repeat_count :]
+        min_pair = consecutive_similarity_score(tail)
+        if min_pair >= self._config.similar_text_threshold:
+            self._stop_loop(
+                agent_id=agent_id,
+                workflow=workflow,
+                session_id=session_id,
+                state=state,
+                reason="LoopDetected",
+                detail=(
+                    f"prompts consécutifs similaires à {min_pair:.0%} "
+                    f"(seuil {self._config.similar_text_threshold:.0%})"
+                ),
+                call_count=call_count,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                pending_cost_usd=pending_cost_usd,
+            )
 
     def _check_similarity_streak(
         self,
@@ -217,6 +301,10 @@ class AgentGuardrails:
         bucket: list[str],
         label: str,
         call_count: int,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        pending_cost_usd: float,
     ) -> None:
         if not bucket:
             return
@@ -238,7 +326,49 @@ class AgentGuardrails:
                     f"(seuil {self._config.similar_text_threshold})"
                 ),
                 call_count=call_count,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                pending_cost_usd=pending_cost_usd,
             )
+
+    def _compute_loop_cost_saved(
+        self,
+        *,
+        state: _SessionState,
+        agent_id: str,
+        workflow: str | None,
+        session_id: str,
+        call_count: int,
+        model: str,
+        input_tokens: int,
+        output_tokens: int,
+        pending_cost_usd: float,
+    ) -> float:
+        """Coût évité = tokens restants (budget ou appels) × prix moyen/token du modèle."""
+        price = avg_price_per_token(model, input_tokens, output_tokens)
+        if price <= 0:
+            return 0.0
+
+        if self._config.budget_limit_usd is not None:
+            current = self._storage.session_cost(
+                agent_id=agent_id,
+                workflow=workflow,
+                session_id=session_id,
+                scope=self._config.budget_scope,
+            )
+            remaining_usd = max(0.0, self._config.budget_limit_usd - current - pending_cost_usd)
+            remaining_tokens = remaining_usd / price
+            return round(remaining_tokens * price, 6)
+
+        if state.call_count > 0:
+            avg_tokens = (state.total_input_tokens + state.total_output_tokens) / state.call_count
+        else:
+            avg_tokens = float(input_tokens + output_tokens)
+
+        remaining_calls = max(0, self._config.estimated_calls_if_unbounded - call_count + 1)
+        remaining_tokens = remaining_calls * avg_tokens
+        return round(remaining_tokens * price, 6)
 
     def _estimate_saved(self, state: _SessionState, avg_cost: float) -> float:
         remaining = max(
@@ -263,9 +393,26 @@ class AgentGuardrails:
         detail: str,
         call_count: int,
         drift_score: float | None = None,
+        model: str = "unknown",
+        input_tokens: int = 0,
+        output_tokens: int = 0,
+        pending_cost_usd: float = 0.0,
     ) -> None:
         state.stopped = True
-        saved = self._estimate_saved(state, self._avg_cost(state))
+        legacy_saved = self._estimate_saved(state, self._avg_cost(state))
+        cost_saved = 0.0
+        if reason == "LoopDetected":
+            cost_saved = self._compute_loop_cost_saved(
+                state=state,
+                agent_id=agent_id,
+                workflow=workflow,
+                session_id=session_id,
+                call_count=call_count,
+                model=model,
+                input_tokens=input_tokens,
+                output_tokens=output_tokens,
+                pending_cost_usd=pending_cost_usd,
+            )
         self._storage.insert_stop(
             agent_id=agent_id,
             workflow=workflow,
@@ -276,7 +423,8 @@ class AgentGuardrails:
             cost_at_stop=state.total_cost_usd,
             budget_limit=self._config.budget_limit_usd,
             drift_score=drift_score,
-            estimated_saved_usd=saved,
+            estimated_saved_usd=legacy_saved,
+            estimated_cost_saved=cost_saved,
         )
         raise LoopDetectedError(
             (
@@ -317,6 +465,7 @@ class AgentGuardrails:
             budget_limit=limit,
             drift_score=None,
             estimated_saved_usd=saved,
+            estimated_cost_saved=0.0,
         )
         raise BudgetExceededError(
             (

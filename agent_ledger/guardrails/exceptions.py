@@ -5,6 +5,10 @@ class GuardrailError(Exception):
     """Base des erreurs de guardrails."""
 
 
+# Alias demandé par le cahier des charges
+GuardrailException = GuardrailError
+
+
 class LoopDetectedError(GuardrailError):
     """Boucle ou répétition anormale détectée."""
 
