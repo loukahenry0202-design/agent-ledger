@@ -42,6 +42,7 @@ def collect_dashboard_data(db_path: str | Path) -> dict:
     Ledger.reset()
     ledger = Ledger.get(db_path)
     recent = ledger.recent(limit=500)
+    guardrails = ledger.guardrail_summary()
     return {
         "db_path": str(Path(db_path).resolve()),
         "total_spend": round(ledger.total_spend(), 6),
@@ -50,6 +51,27 @@ def collect_dashboard_data(db_path: str | Path) -> dict:
         "by_workflow": _serialize_report(ledger.report(group_by="workflow")),
         "by_model": _serialize_report(ledger.report(group_by="model")),
         "calls": _serialize_calls(recent),
+        "guardrails": {
+            "stopped_workflows": guardrails.stopped_workflows,
+            "stop_reasons": guardrails.stop_reasons,
+            "average_drift_score": guardrails.average_drift_score,
+            "estimated_saved_usd": guardrails.estimated_saved_usd,
+            "stops": [
+                {
+                    "id": s.id,
+                    "agent_id": s.agent_id,
+                    "workflow": s.workflow or "—",
+                    "reason": s.reason,
+                    "detail": s.detail,
+                    "calls_at_stop": s.calls_at_stop,
+                    "cost_at_stop": round(s.cost_at_stop, 6),
+                    "estimated_saved_usd": round(s.estimated_saved_usd, 6),
+                    "drift_score": s.drift_score,
+                    "created_at": s.created_at.strftime("%Y-%m-%d %H:%M"),
+                }
+                for s in guardrails.stops
+            ],
+        },
     }
 
 
@@ -72,6 +94,7 @@ def render_html(data: dict) -> str:
       --accent: #3b82f6;
       --green: #22c55e;
       --orange: #f59e0b;
+      --red: #ef4444;
     }}
     * {{ box-sizing: border-box; margin: 0; padding: 0; }}
     body {{
@@ -181,6 +204,18 @@ def render_html(data: dict) -> str:
       <div class="kpi-label">Workflows</div>
       <div class="kpi-value" id="kpi-workflows">—</div>
     </div>
+    <div class="kpi">
+      <div class="kpi-label">Workflows stoppés</div>
+      <div class="kpi-value" id="kpi-stops" style="color:var(--red)">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Coût économisé (est.)</div>
+      <div class="kpi-value money" id="kpi-saved">—</div>
+    </div>
+    <div class="kpi">
+      <div class="kpi-label">Drift score moyen</div>
+      <div class="kpi-value" id="kpi-drift">—</div>
+    </div>
   </div>
 
   <div class="charts">
@@ -200,7 +235,18 @@ def render_html(data: dict) -> str:
       <h2>Tokens par agent</h2>
       <div class="chart-wrap"><canvas id="chart-tokens"></canvas></div>
     </div>
+    <div class="chart-card">
+      <h2>Raisons d'arrêt (guardrails)</h2>
+      <div class="chart-wrap"><canvas id="chart-stop-reasons"></canvas></div>
+    </div>
   </div>
+
+  <section>
+    <h2>Agent Guardrails — arrêts récents</h2>
+    <div class="table-wrap">
+      <table id="table-stops"></table>
+    </div>
+  </section>
 
   <section>
     <h2>Rapport par agent</h2>
@@ -232,7 +278,12 @@ def render_html(data: dict) -> str:
     document.getElementById("kpi-agents").textContent = DATA.by_agent.length;
     document.getElementById("kpi-workflows").textContent = DATA.by_workflow.length;
 
-    const palette = ["#3b82f6", "#22c55e", "#f59e0b", "#a855f7", "#ec4899", "#14b8a6"];
+    const gr = DATA.guardrails || {{}};
+    document.getElementById("kpi-stops").textContent = gr.stopped_workflows || 0;
+    document.getElementById("kpi-saved").textContent = "$" + (gr.estimated_saved_usd || 0).toFixed(4);
+    document.getElementById("kpi-drift").textContent = (gr.average_drift_score || 0).toFixed(3);
+
+    const palette = ["#3b82f6", "#22c55e", "#f59e0b", "#a855f7", "#ec4899", "#14b8a6", "#ef4444"];
     const chartDefaults = {{
       responsive: true,
       maintainAspectRatio: false,
@@ -308,6 +359,24 @@ def render_html(data: dict) -> str:
       options: {{ ...chartDefaults, scales: {{ ...chartDefaults.scales, x: {{ stacked: true, ...chartDefaults.scales.x }}, y: {{ stacked: true, ...chartDefaults.scales.y }} }} }},
     }});
 
+    const stopReasons = gr.stop_reasons || {{}};
+    const reasonLabels = Object.keys(stopReasons);
+    if (reasonLabels.length) {{
+      new Chart(document.getElementById("chart-stop-reasons"), {{
+        type: "bar",
+        data: {{
+          labels: reasonLabels,
+          datasets: [{{
+            label: "Arrêts",
+            data: reasonLabels.map(k => stopReasons[k]),
+            backgroundColor: "#ef4444",
+            borderRadius: 6,
+          }}],
+        }},
+        options: chartDefaults,
+      }});
+    }}
+
     function buildTable(elId, columns, rows) {{
       const el = document.getElementById(elId);
       const head = "<thead><tr>" + columns.map(c => `<th class="${{c.numeric ? "num" : ""}}">${{c.label}}</th>`).join("") + "</tr></thead>";
@@ -326,6 +395,16 @@ def render_html(data: dict) -> str:
     ];
     buildTable("table-agent", reportCols, DATA.by_agent);
     buildTable("table-workflow", reportCols, DATA.by_workflow);
+
+    buildTable("table-stops", [
+      {{ key: "created_at", label: "Date" }},
+      {{ key: "agent_id", label: "Agent" }},
+      {{ key: "workflow", label: "Workflow" }},
+      {{ key: "reason", label: "Raison" }},
+      {{ key: "detail", label: "Détail" }},
+      {{ key: "calls_at_stop", label: "Appels", numeric: true }},
+      {{ key: "estimated_saved_usd", label: "Économisé", numeric: true, money: true, fmt: r => r.estimated_saved_usd.toFixed(4) }},
+    ], gr.stops || []);
 
     buildTable("table-calls", [
       {{ key: "id", label: "#", numeric: true }},

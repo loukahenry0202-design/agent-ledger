@@ -1,11 +1,11 @@
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Literal
 
+from agent_ledger.db import sqlite_connection
 from agent_ledger.models import CallRecord, CostReport
 
 GroupBy = Literal["agent", "model", "workflow", "day"]
@@ -17,13 +17,11 @@ class Storage:
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self._init_db()
 
-    def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
-        conn.row_factory = sqlite3.Row
-        return conn
+    def close(self) -> None:
+        """Compatibilité lifecycle — connexions fermées par opération."""
 
     def _init_db(self) -> None:
-        with self._connect() as conn:
+        with sqlite_connection(self.db_path) as conn:
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS calls (
@@ -59,7 +57,7 @@ class Storage:
         created_at: datetime | None = None,
     ) -> int:
         ts = (created_at or datetime.now(timezone.utc)).isoformat()
-        with self._connect() as conn:
+        with sqlite_connection(self.db_path) as conn:
             cur = conn.execute(
                 """
                 INSERT INTO calls (
@@ -80,7 +78,7 @@ class Storage:
             )
             return int(cur.lastrowid)
 
-    def _row_to_record(self, row: sqlite3.Row) -> CallRecord:
+    def _row_to_record(self, row) -> CallRecord:
         return CallRecord(
             id=row["id"],
             agent_id=row["agent_id"],
@@ -94,7 +92,7 @@ class Storage:
         )
 
     def list_recent(self, limit: int = 50) -> list[CallRecord]:
-        with self._connect() as conn:
+        with sqlite_connection(self.db_path) as conn:
             rows = conn.execute(
                 "SELECT * FROM calls ORDER BY id DESC LIMIT ?", (limit,)
             ).fetchall()
@@ -108,7 +106,7 @@ class Storage:
             "day": "date(created_at)",
         }[group_by]
 
-        with self._connect() as conn:
+        with sqlite_connection(self.db_path) as conn:
             rows = conn.execute(
                 f"""
                 SELECT
@@ -135,6 +133,6 @@ class Storage:
         ]
 
     def total_spend(self) -> float:
-        with self._connect() as conn:
+        with sqlite_connection(self.db_path) as conn:
             row = conn.execute("SELECT COALESCE(SUM(cost_usd), 0) FROM calls").fetchone()
         return float(row[0])

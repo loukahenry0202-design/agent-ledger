@@ -43,6 +43,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     dash_p.add_argument("--no-open", action="store_true", help="Ne pas ouvrir le navigateur")
 
+    sub.add_parser("guardrails", help="Rapport Agent Guardrails", parents=[db_parent])
+
     args = parser.parse_args(argv)
     Ledger.reset()
     ledger = Ledger.get(args.db) if args.db else Ledger.get()
@@ -107,6 +109,25 @@ def main(argv: list[str] | None = None) -> int:
         if not args.no_open:
             open_in_browser(out)
             print("Ouverture dans le navigateur…")
+        return 0
+
+    if args.command == "guardrails":
+        summary = ledger.guardrail_summary()
+        if summary.stopped_workflows == 0:
+            print("Aucun arrêt guardrails enregistré.")
+            return 0
+        print(f"\nWorkflows stoppés : {summary.stopped_workflows}")
+        print(f"Drift score moyen : {summary.average_drift_score:.3f}")
+        print(f"Coût économisé (est.) : ${summary.estimated_saved_usd:.4f}")
+        print(f"Raisons : {summary.stop_reasons}\n")
+        print(f"{'Date':<18} {'Agent':<16} {'Workflow':<16} {'Raison':<16} {'Économisé':>10}")
+        print("-" * 80)
+        for s in summary.stops[:20]:
+            print(
+                f"{s.created_at:%Y-%m-%d %H:%M} {s.agent_id:<16} "
+                f"{(s.workflow or '—'):<16} {s.reason:<16} "
+                f"${s.estimated_saved_usd:>9.4f}"
+            )
         return 0
 
     return 1
