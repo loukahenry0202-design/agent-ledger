@@ -1,6 +1,6 @@
 # AgentLedger
 
-MVP de **Agent P&L** : middleware Python pour tracer et attribuer les coûts API d'une flotte d'agents IA. De plus il vous fait gagner de l'argent grace à ses fonctionnalités: anti-drift, anti-boucle, bloque les dépassement de budjet.
+MVP de **Agent P&L** : middleware Python pour tracer et attribuer les coûts API d'une flotte d'agents IA. De plus il vous permet de gagner de l'argent grace à ses fonctionnalités: anti-drift, anti-boucle, bloque les dépassement de budjet.
 
 ## Démarrage rapide
 
