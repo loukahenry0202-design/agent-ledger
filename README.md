@@ -29,24 +29,42 @@ py -3 -m agent_ledger.cli dashboard --db data/demo_ledger.db
 ```python
 from agent_ledger import Ledger, agent_session, track_agent
 
-ledger = Ledger.get()  # ~/.agent_ledger/ledger.db
+# Initialize or retrieve the global ledger instance (default storage: ~/.agent_ledger/ledger.db)
+ledger = Ledger.get()
 
+# Track costs automatically for a specific agent and workflow using a decorator
 @track_agent("sales-bot", workflow="qualification")
 def handle_lead():
-    ledger.record(model="gpt-4o-mini", input_tokens=500, output_tokens=120)
+    # Record explicit token usage and associated model architecture costs
+    ledger.record(
+        model="gpt-4o-mini",
+        input_tokens=500,
+        output_tokens=120
+    )
 
-with agent_session("orchestrator"):
-  ledger.record(model="gpt-4o", input_tokens=2000, output_tokens=400)
+    # Track nested sub-tasks within a specific execution context
+    with agent_session("orchestrator"):
+        ledger.record(
+            model="gpt-4o",
+            input_tokens=2000,
+            output_tokens=400
+        )
 ```
 
-## OpenAI (Optional)
+## OpenAI Integration (Optional)
 
 ```python
 from openai import OpenAI
 from agent_ledger.openai_hook import TrackedOpenAI
 from agent_ledger import agent_session
 
+# Wrap the standard OpenAI client with AgentLedger instrumentation hooks
 client = TrackedOpenAI(OpenAI())
+
+# Automatically monitor and attribute API consumption within the session context
 with agent_session("my-agent"):
-    client.chat.completions.create(model="gpt-4o-mini", messages=[...])
+    client.chat.completions.create(
+        model="gpt-4o-mini",
+        messages=[...]
+    )
 ```
